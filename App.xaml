@@ -80,6 +80,52 @@
             </Style.Triggers>
         </Style>
 
+        <Style x:Key="CompactListBoxItem" TargetType="ListBoxItem">
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="Margin" Value="0,0,0,2"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#1e2a38"/>
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#243a52"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="GhostButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource Brush.Accent}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource Brush.Border}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="16,8"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+
+        <Style x:Key="ToolbarButton" TargetType="Button" BasedOn="{StaticResource GhostButton}">
+            <Setter Property="Padding" Value="10,5"/>
+            <Setter Property="FontSize" Value="11"/>
+        </Style>
+
+        <Style x:Key="QueueStatusPending" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#8b9bab"/>
+            <Setter Property="FontSize" Value="10"/>
+        </Style>
+        <Style x:Key="QueueStatusRunning" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#7eb8e8"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style x:Key="QueueStatusDone" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#6ab889"/>
+            <Setter Property="FontSize" Value="10"/>
+        </Style>
+        <Style x:Key="QueueStatusFailed" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#e88a7e"/>
+            <Setter Property="FontSize" Value="10"/>
+        </Style>
+
         <Style x:Key="PrimaryButton" TargetType="Button">
             <Setter Property="Background" Value="{StaticResource Brush.Accent}"/>
             <Setter Property="Foreground" Value="White"/>
@@ -104,15 +150,6 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
-        </Style>
-
-        <Style x:Key="GhostButton" TargetType="Button">
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="{StaticResource Brush.Accent}"/>
-            <Setter Property="BorderBrush" Value="{StaticResource Brush.Border}"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="16,8"/>
-            <Setter Property="Cursor" Value="Hand"/>
         </Style>
 
         <Style x:Key="ExportProgressBar" TargetType="ProgressBar">

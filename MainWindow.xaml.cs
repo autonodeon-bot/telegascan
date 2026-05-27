@@ -25,8 +25,7 @@ public partial class MainWindow
 {
     private readonly AppSettingsStore _settings = AppSettingsStore.Load();
     private readonly ObservableCollection<DialogListItem> _chatItems = new();
-    private readonly ObservableCollection<string> _queueItems = new();
-    private readonly List<DialogListItem> _exportQueue = new();
+    private readonly ObservableCollection<ExportQueueItem> _exportQueue = new();
     private readonly string _sessionPath;
 
     private Client? _client;
@@ -50,7 +49,8 @@ public partial class MainWindow
             : _settings.LastExportFolder;
         ListChats.ItemsSource = _chatItems;
         CollectionViewSource.GetDefaultView(_chatItems).Filter = ChatFilter;
-        ListQueue.ItemsSource = _queueItems;
+        ListQueue.ItemsSource = _exportQueue;
+        RefreshQueueUi();
 
         SliderHistoryDelay.ValueChanged += (_, _) => LblHistoryDelay.Text = $"{(int)SliderHistoryDelay.Value} мс";
         SliderMediaDelay.ValueChanged += (_, _) => LblMediaDelay.Text = $"{(int)SliderMediaDelay.Value} мс";
@@ -193,6 +193,8 @@ public partial class MainWindow
                 TxtStatus.Text = $"{userName} — {dialogs.Count} диалогов. Выберите чат.";
             BtnDisconnect.Visibility = Visibility.Visible;
             BtnExport.IsEnabled = ListChats.SelectedItem != null;
+            BtnPreview.IsEnabled = BtnExport.IsEnabled;
+            RefreshQueueUi();
             SaveSettingsFromUi();
         }
         catch (Exception ex)
@@ -269,9 +271,58 @@ public partial class MainWindow
 
     private void ListChats_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        TxtSelectedChat.Text = ListChats.SelectedItem is DialogListItem d ? "Выбран: " + d.Title : "Чат не выбран";
-        BtnExport.IsEnabled = _client != null && ListChats.SelectedItem != null;
+        UpdateSelectedChatLabel();
+        BtnExport.IsEnabled = _client != null && !_busy && ListChats.SelectedItem != null;
+        BtnPreview.IsEnabled = BtnExport.IsEnabled;
     }
+
+    private void UpdateSelectedChatLabel()
+    {
+        var marked = _chatItems.Count(c => c.IsMarked);
+        if (ListChats.SelectedItems.Count > 1)
+        {
+            TxtSelectedChat.Text = $"Выделено: {ListChats.SelectedItems.Count}  |  Отмечено: {marked}";
+            return;
+        }
+        TxtSelectedChat.Text = ListChats.SelectedItem is DialogListItem d
+            ? $"Выбран: {d.Title}" + (marked > 0 ? $"  (отмечено: {marked})" : "")
+            : marked > 0 ? $"Отмечено чатов: {marked}" : "Чат не выбран";
+    }
+
+    private void ChatMark_Changed(object sender, RoutedEventArgs e) => RefreshMarkedCount();
+
+    private void RefreshMarkedCount()
+    {
+        var marked = _chatItems.Count(c => c.IsMarked);
+        LblMarkedCount.Text = $"Отмечено: {marked}";
+        UpdateSelectedChatLabel();
+    }
+
+    private IEnumerable<DialogListItem> GetVisibleChats()
+    {
+        var view = CollectionViewSource.GetDefaultView(_chatItems);
+        return _chatItems.Where(c => view.Filter == null || view.Filter(c));
+    }
+
+    private void BtnMarkAllVisible_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var c in GetVisibleChats()) c.IsMarked = true;
+        RefreshMarkedCount();
+    }
+
+    private void BtnUnmarkAll_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var c in _chatItems) c.IsMarked = false;
+        RefreshMarkedCount();
+    }
+
+    private void BtnInvertMarks_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var c in GetVisibleChats()) c.IsMarked = !c.IsMarked;
+        RefreshMarkedCount();
+    }
+
+    private void ListQueue_OnSelectionChanged(object sender, SelectionChangedEventArgs e) { }
 
     private void BtnPickFolder_OnClick(object sender, RoutedEventArgs e)
     {
@@ -286,22 +337,10 @@ public partial class MainWindow
         }
     }
 
-    private async void BtnExport_OnClick(object sender, RoutedEventArgs e)
+    private ExportOptions BuildExportOptions()
     {
-        if (_client is null || ListChats.SelectedItem is not DialogListItem chat) return;
-        var folderRoot = TxtExportFolder.Text.Trim();
-        if (string.IsNullOrEmpty(folderRoot)) { AppendLog("Укажите папку экспорта."); return; }
-
-        Directory.CreateDirectory(folderRoot);
-        var outDir = Path.Combine(folderRoot, SanitizeName(chat.Title));
-
-        var hasExisting = Directory.Exists(Path.Combine(outDir, "media"));
-        if (hasExisting)
-            AppendLog("Папка уже существует — докачка: существующие файлы будут пропущены.");
-
         var pageItem = (ComboBoxItem)CmbPageSize.SelectedItem;
         var perPage = int.TryParse(pageItem.Tag?.ToString(), out var ps) ? ps : 250;
-
         var qualityTag = ((ComboBoxItem)CmbMediaQuality.SelectedItem).Tag?.ToString() ?? "original";
         var quality = qualityTag switch
         {
@@ -311,41 +350,67 @@ public partial class MainWindow
             _ => MediaQuality.Original
         };
 
-        var isChannel = RbChannel.IsChecked == true;
-        var options = new ExportOptions
+        return new ExportOptions
         {
             MessagesPerPage = perPage,
             DelayBetweenHistoryRequests = TimeSpan.FromMilliseconds((int)SliderHistoryDelay.Value),
             DelayAfterEachMediaFile = TimeSpan.FromMilliseconds((int)SliderMediaDelay.Value),
             HistoryBatchSize = 100,
             Quality = quality,
-            Mode = isChannel ? ExportMode.Channel : ExportMode.Chat,
+            Mode = RbChannel.IsChecked == true ? ExportMode.Channel : ExportMode.Chat,
             ParallelDownloads = (int)SliderParallel.Value,
             FromDate = DpFrom.SelectedDate,
             ToDate = DpTo.SelectedDate,
-            DownloadPhotos    = ChkPhotos.IsChecked == true,
-            DownloadVideos    = ChkVideos.IsChecked == true,
+            DownloadPhotos = ChkPhotos.IsChecked == true,
+            DownloadVideos = ChkVideos.IsChecked == true,
             DownloadDocuments = ChkDocuments.IsChecked == true,
-            DownloadVoice     = ChkVoice.IsChecked == true,
-            DownloadStickers  = ChkStickers.IsChecked == true,
-            Incremental       = ChkIncremental.IsChecked == true,
-            ExportJson        = ChkExportJson.IsChecked == true,
-            ExportSqlite      = ChkExportSqlite.IsChecked == true,
+            DownloadVoice = ChkVoice.IsChecked == true,
+            DownloadStickers = ChkStickers.IsChecked == true,
+            Incremental = ChkIncremental.IsChecked == true,
+            ExportJson = ChkExportJson.IsChecked == true,
+            ExportSqlite = ChkExportSqlite.IsChecked == true,
             GenerateStatistics = ChkStatistics.IsChecked == true,
-            SaveLongTexts     = ChkLongTexts.IsChecked == true,
-            GroupAlbums       = ChkAlbums.IsChecked == true,
-            GroupThreads      = ChkThreads.IsChecked == true,
-            TrackForwarded    = ChkForwarded.IsChecked == true,
-            DeduplicateMedia  = ChkDedup.IsChecked == true,
-            CreateZip         = ChkZip.IsChecked == true
+            SaveLongTexts = ChkLongTexts.IsChecked == true,
+            GroupAlbums = ChkAlbums.IsChecked == true,
+            GroupThreads = ChkThreads.IsChecked == true,
+            TrackForwarded = ChkForwarded.IsChecked == true,
+            DeduplicateMedia = ChkDedup.IsChecked == true,
+            CreateZip = ChkZip.IsChecked == true
         };
+    }
 
+    private void SetExportBusy(bool busy)
+    {
+        _busy = busy;
+        BtnExport.IsEnabled = !busy && _client != null && ListChats.SelectedItem != null;
+        BtnPreview.IsEnabled = BtnExport.IsEnabled;
+        BtnRunQueue.IsEnabled = !busy && _exportQueue.Count > 0;
+        BtnAddToQueue.IsEnabled = !busy;
+        BtnClearQueue.IsEnabled = !busy && _exportQueue.Count > 0;
+        BtnMarkAllVisible.IsEnabled = !busy;
+        BtnUnmarkAll.IsEnabled = !busy;
+        BtnInvertMarks.IsEnabled = !busy;
+        BtnCancelExport.IsEnabled = busy;
+        ListChats.IsEnabled = !busy;
+    }
+
+    private async void BtnExport_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (_client is null || _busy || ListChats.SelectedItem is not DialogListItem chat) return;
+        var folderRoot = TxtExportFolder.Text.Trim();
+        if (string.IsNullOrEmpty(folderRoot)) { AppendLog("Укажите папку экспорта."); return; }
+
+        Directory.CreateDirectory(folderRoot);
+        var outDir = Path.Combine(folderRoot, SanitizeName(chat.Title));
+        if (Directory.Exists(Path.Combine(outDir, "media")))
+            AppendLog("Папка уже существует — докачка: существующие файлы будут пропущены.");
+
+        var options = BuildExportOptions();
         _exportCts = new CancellationTokenSource();
-        BtnExport.IsEnabled = false;
-        BtnCancelExport.IsEnabled = true;
+        SetExportBusy(true);
         ResetExportProgressUi();
         ExportProgressBar.IsIndeterminate = true;
-        AppendLog("--- Старт экспорта ---");
+        AppendLog($"--- Старт: {chat.Title} → {outDir} ---");
 
         var progress = new Progress<ExportProgressReport>(r => Dispatcher.Invoke(() => ApplyExportProgress(r)));
         var success = false;
@@ -359,9 +424,7 @@ public partial class MainWindow
         finally
         {
             ExportProgressBar.IsIndeterminate = false;
-            BtnCancelExport.IsEnabled = false;
-            BtnExport.IsEnabled = _client != null && ListChats.SelectedItem != null;
-            BtnPreview.IsEnabled = BtnExport.IsEnabled;
+            SetExportBusy(false);
         }
 
         if (success)
@@ -407,6 +470,16 @@ public partial class MainWindow
         if (e.Key == Key.E && Keyboard.Modifiers == ModifierKeys.Control && BtnExport.IsEnabled)
         {
             BtnExport_OnClick(BtnExport, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Q && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && BtnAddToQueue.IsEnabled)
+        {
+            BtnAddToQueue_Click(BtnAddToQueue, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (e.Key == Key.D && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && BtnRunQueue.IsEnabled)
+        {
+            BtnRunQueue_Click(BtnRunQueue, new RoutedEventArgs());
             e.Handled = true;
         }
         else if (e.Key == Key.Escape && BtnCancelExport.IsEnabled)
@@ -460,74 +533,146 @@ public partial class MainWindow
     }
 
     // ─── Очередь экспорта ────────────────────────────────────────
+    private IEnumerable<DialogListItem> CollectChatsForQueue()
+    {
+        var set = new HashSet<string>();
+        var result = new List<DialogListItem>();
+        void Add(DialogListItem item)
+        {
+            if (!set.Add(item.PeerKey)) return;
+            result.Add(item);
+        }
+        foreach (var c in _chatItems.Where(c => c.IsMarked)) Add(c);
+        foreach (DialogListItem c in ListChats.SelectedItems) Add(c);
+        return result;
+    }
+
     private void BtnAddToQueue_Click(object sender, RoutedEventArgs e)
     {
-        foreach (var item in ListChats.SelectedItems.OfType<DialogListItem>())
+        var toAdd = CollectChatsForQueue().Where(c => _exportQueue.All(q => q.Chat.PeerKey != c.PeerKey)).ToList();
+        if (toAdd.Count == 0)
         {
-            if (_exportQueue.All(q => q.Title != item.Title))
-            {
-                _exportQueue.Add(item);
-                _queueItems.Add(item.Title);
-            }
+            AppendLog("Нечего добавить: отметьте чекбоксы или выделите чаты, которых ещё нет в очереди.");
+            return;
         }
+        foreach (var chat in toAdd)
+            _exportQueue.Add(new ExportQueueItem(chat));
+        ReindexQueue();
+        RefreshQueueUi();
+        AppendLog($"В очередь добавлено: {toAdd.Count} (всего {_exportQueue.Count})");
+    }
+
+    private void BtnRemoveFromQueue_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as Button)?.Tag is not ExportQueueItem item) return;
+        _exportQueue.Remove(item);
+        ReindexQueue();
+        RefreshQueueUi();
     }
 
     private void BtnClearQueue_Click(object sender, RoutedEventArgs e)
     {
         _exportQueue.Clear();
-        _queueItems.Clear();
+        RefreshQueueUi();
     }
+
+    private void ReindexQueue()
+    {
+        for (var i = 0; i < _exportQueue.Count; i++)
+            _exportQueue[i].Position = i + 1;
+    }
+
+    private void RefreshQueueUi()
+    {
+        var n = _exportQueue.Count;
+        BtnRunQueue.IsEnabled = !_busy && n > 0;
+        BtnClearQueue.IsEnabled = !_busy && n > 0;
+        BtnRunQueue.Content = n > 0 ? $"▶ Скачать очередь ({n})" : "▶ Скачать очередь";
+        LblQueueSummary.Text = n == 0 ? "пусто" : $"{n} {_PluralChats(n)} — по одному";
+        var root = TxtExportFolder.Text.Trim();
+        LblQueueFolderHint.Text = string.IsNullOrEmpty(root)
+            ? "Укажите папку экспорта справа"
+            : $"Каждый чат → {root}\\<название>";
+        RefreshMarkedCount();
+    }
+
+    private static string _PluralChats(int n) =>
+        (n % 10, n % 100) switch
+        {
+            (1, not 11) => "чат",
+            ( >= 2 and <= 4, not (>= 12 and <= 14)) => "чата",
+            _ => "чатов"
+        };
 
     private async void BtnRunQueue_Click(object sender, RoutedEventArgs e)
     {
-        if (_client is null || _exportQueue.Count == 0) return;
-        if (_busy) { AppendLog("Уже выполняется экспорт."); return; }
+        if (_client is null || _exportQueue.Count == 0 || _busy) return;
 
         var folderRoot = TxtExportFolder.Text.Trim();
-        if (string.IsNullOrEmpty(folderRoot)) { AppendLog("Укажите папку."); return; }
+        if (string.IsNullOrEmpty(folderRoot)) { AppendLog("Укажите папку экспорта."); return; }
+        Directory.CreateDirectory(folderRoot);
 
-        var qualityTag = ((ComboBoxItem)CmbMediaQuality.SelectedItem).Tag?.ToString() ?? "original";
-        var quality = qualityTag switch { "compressed" => MediaQuality.Compressed, "thumbs" => MediaQuality.Thumbs, "none" => MediaQuality.None, _ => MediaQuality.Original };
-        var baseOptions = new ExportOptions
-        {
-            DelayBetweenHistoryRequests = TimeSpan.FromMilliseconds((int)SliderHistoryDelay.Value),
-            DelayAfterEachMediaFile = TimeSpan.FromMilliseconds((int)SliderMediaDelay.Value),
-            ParallelDownloads = (int)SliderParallel.Value,
-            Quality = quality,
-            Mode = RbChannel.IsChecked == true ? ExportMode.Channel : ExportMode.Chat,
-            Incremental = ChkIncremental.IsChecked == true,
-            ExportJson = ChkExportJson.IsChecked == true,
-            ExportSqlite = ChkExportSqlite.IsChecked == true,
-            GenerateStatistics = ChkStatistics.IsChecked == true,
-        };
-
-        _busy = true;
-        BtnRunQueue.IsEnabled = false;
-        _exportCts = new CancellationTokenSource();
+        var options = BuildExportOptions();
         var queue = _exportQueue.ToList();
-        AppendLog($"--- Очередь: {queue.Count} чатов ---");
+        var total = queue.Count;
+
+        _exportCts = new CancellationTokenSource();
+        SetExportBusy(true);
+        ResetExportProgressUi();
+        ExportProgressBar.IsIndeterminate = false;
+        AppendLog($"--- Очередь: {total} чатов, последовательно, каждый в свою папку ---");
 
         var progress = new Progress<ExportProgressReport>(r => Dispatcher.Invoke(() => ApplyExportProgress(r)));
-        foreach (var chat in queue)
+        var done = 0;
+        var failed = 0;
+
+        for (var i = 0; i < queue.Count; i++)
         {
             if (_exportCts.IsCancellationRequested) break;
-            AppendLog($"Экспорт: {chat.Title}");
+
+            var entry = queue[i];
+            var chat = entry.Chat;
             var outDir = Path.Combine(folderRoot, SanitizeName(chat.Title));
+            var num = i + 1;
+
+            entry.Status = QueueItemStatus.Running;
+            entry.StatusHint = $"{num}/{total}";
+            LblExportPhase.Text = $"Очередь {num} из {total}: {chat.Title}";
+            AppendLog($"[{num}/{total}] {chat.Title} → {outDir}");
+
+            if (Directory.Exists(Path.Combine(outDir, "media")))
+                AppendLog("  Докачка: существующие файлы будут пропущены.");
+
             try
             {
                 await Task.Run(() => ChatExportService.ExportChatToHtmlAsync(
-                    _client, chat.Peer, chat.Title, outDir, baseOptions, progress, _exportCts.Token));
-                AppendLog($"  Готово: {chat.Title}");
+                    _client, chat.Peer, chat.Title, outDir, options, progress, _exportCts.Token));
+                entry.Status = QueueItemStatus.Done;
+                done++;
+                AppendLog($"  ✓ Готово: {chat.Title}");
             }
-            catch (OperationCanceledException) { AppendLog("Очередь остановлена."); break; }
-            catch (Exception ex) { AppendLog($"  Ошибка {chat.Title}: {ex.Message}"); }
+            catch (OperationCanceledException)
+            {
+                entry.Status = QueueItemStatus.Cancelled;
+                AppendLog("Очередь остановлена.");
+                break;
+            }
+            catch (Exception ex)
+            {
+                entry.Status = QueueItemStatus.Failed;
+                entry.StatusHint = ex.Message.Length > 40 ? ex.Message[..40] + "…" : ex.Message;
+                failed++;
+                AppendLog($"  ✗ Ошибка {chat.Title}: {ex.Message}");
+            }
         }
 
-        _busy = false;
-        BtnRunQueue.IsEnabled = true;
+        ExportProgressBar.IsIndeterminate = false;
+        SetExportBusy(false);
+        LblExportPhase.Text = $"Очередь завершена: {done} готово" + (failed > 0 ? $", {failed} с ошибкой" : "");
         LoadHistory();
         try { SystemSounds.Exclamation.Play(); } catch { /* */ }
-        AppendLog("--- Очередь завершена ---");
+        AppendLog($"--- Итог очереди: {done} успешно, {failed} ошибок ---");
+        RefreshQueueUi();
     }
 
     // ─── История экспортов ───────────────────────────────────────
