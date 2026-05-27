@@ -1,0 +1,32 @@
+## Build results
+[Bb]in/
+[Oo]bj/
+[Dd]ist/
+[Pp]ublish/
+
+## Visual Studio / Rider
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## NuGet
+*.nupkg
+**/packages/*
+!**/packages/build/
+
+## Secrets / local data
+*.session
+.env
+.env.*
+appsettings.*.json
+!appsettings.json
+
+## OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+## Logs
+*.log

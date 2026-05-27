@@ -1,0 +1,419 @@
+<Window x:Class="TelegaScan.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="TelegaScan — архив чатов Telegram"
+        MinWidth="1060" MinHeight="680"
+        Width="1200" Height="820"
+        WindowStartupLocation="CenterScreen">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="280"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="360"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- ══════════════════════════════════════
+             Левая панель: подключение
+             ══════════════════════════════════════ -->
+        <Border Grid.Column="0" Padding="18,18,12,18" Background="#0e1621">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel>
+                    <TextBlock FontSize="20" FontWeight="SemiBold" Text="TelegaScan" Margin="0,0,0,2" Foreground="{StaticResource Brush.Text}"/>
+                    <TextBlock Foreground="{StaticResource Brush.Muted}" TextWrapping="Wrap" FontSize="12" Margin="0,0,0,16"
+                               Text="Экспорт чатов Telegram в HTML с медиа."/>
+
+                    <Border Background="{StaticResource Brush.Panel}" CornerRadius="10" Padding="14" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1">
+                        <StackPanel>
+                            <TextBlock Text="Данные приложения (my.telegram.org)" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,10" Foreground="White"/>
+                            <TextBlock Text="api_id" Foreground="{StaticResource Brush.Muted}" FontSize="11"/>
+                            <TextBox x:Name="TxtApiId" Margin="0,3,0,8" LostFocus="Credentials_OnLostFocus"/>
+                            <TextBlock Text="api_hash" Foreground="{StaticResource Brush.Muted}" FontSize="11"/>
+                            <TextBox x:Name="TxtApiHash" Margin="0,3,0,8" LostFocus="Credentials_OnLostFocus"/>
+                            <TextBlock Text="Телефон (с +)" Foreground="{StaticResource Brush.Muted}" FontSize="11"/>
+                            <TextBox x:Name="TxtPhone" Margin="0,3,0,12" LostFocus="Credentials_OnLostFocus"/>
+                            <Button x:Name="BtnConnect" Content="Подключиться" Style="{StaticResource PrimaryButton}" Click="BtnConnect_OnClick"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Ввод кода / 2FA -->
+                    <Border x:Name="CardCode" Background="{StaticResource Brush.Panel}" CornerRadius="10" Padding="14"
+                            BorderBrush="{StaticResource Brush.Accent}" BorderThickness="1" Margin="0,12,0,0" Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock x:Name="LblCodeTitle" Text="Код из Telegram" FontWeight="SemiBold" FontSize="12" Foreground="White" Margin="0,0,0,4"/>
+                            <TextBlock x:Name="LblCodeHint" TextWrapping="Wrap" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,0,0,8"
+                                       Text="Проверьте уведомления в Telegram или SMS."/>
+                            <TextBox x:Name="TxtCode" FontSize="18" FontWeight="Bold" Margin="0,0,0,4"
+                                     MaxLength="10" HorizontalContentAlignment="Center"/>
+                            <PasswordBox x:Name="TxtPassword" FontSize="14" Margin="0,0,0,4" Visibility="Collapsed"/>
+                            <Button x:Name="BtnSendCode" Content="Отправить код" Style="{StaticResource PrimaryButton}" Margin="0,6,0,0" Click="BtnSendCode_OnClick"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Button x:Name="BtnDisconnect" Content="Выйти" Style="{StaticResource GhostButton}" Margin="0,8,0,0" Click="BtnDisconnect_OnClick" Visibility="Collapsed"/>
+
+                    <Border Margin="0,10,0,0" Background="#141e28" CornerRadius="8" Padding="10" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1">
+                        <TextBlock x:Name="TxtStatus" TextWrapping="Wrap" FontSize="12" Foreground="{StaticResource Brush.Muted}" Text="Не подключено"/>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
+
+        <!-- ══════════════════════════════════════
+             Центр: список чатов
+             ══════════════════════════════════════ -->
+        <Border Grid.Column="1" Padding="10,18,10,18" Background="#0e1621">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <TextBox x:Name="TxtFilter" Grid.Row="0" Margin="0,0,0,8" ToolTip="Фильтр по названию чата" TextChanged="TxtFilter_OnTextChanged"/>
+                <ListBox x:Name="ListChats" Grid.Row="1" SelectionMode="Extended" SelectionChanged="ListChats_OnSelectionChanged">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel>
+                                <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Foreground="White"/>
+                                <TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource Brush.Muted}" FontSize="11"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </Grid>
+        </Border>
+
+        <!-- ══════════════════════════════════════
+             Правая панель: настройки + лог
+             GridSplitter делит по вертикали
+             ══════════════════════════════════════ -->
+        <Border Grid.Column="2" Padding="10,12,14,10" Background="#0c131a">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="2*" MinHeight="180"/>  <!-- настройки -->
+                    <RowDefinition Height="7"/>                   <!-- сплиттер -->
+                    <RowDefinition Height="3*" MinHeight="220"/>  <!-- прогресс + лог -->
+                    <RowDefinition Height="Auto"/>                <!-- кнопки -->
+                </Grid.RowDefinitions>
+
+                <!-- ─── НАСТРОЙКИ (верхняя половина) ─── -->
+                <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,2,0">
+                    <StackPanel>
+                        <!-- Основные параметры -->
+                        <Border Background="{StaticResource Brush.Panel}" CornerRadius="10" Padding="12" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1" Margin="0,0,0,6">
+                            <StackPanel>
+                                <TextBlock Text="Параметры экспорта" FontWeight="SemiBold" FontSize="13" Margin="0,0,0,8" Foreground="{StaticResource Brush.Text}"/>
+                                <!-- Режим -->
+                                <TextBlock Text="Тип архива" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,0,0,4"/>
+                                <Border Background="#141e28" CornerRadius="6" Padding="8,6" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1" Margin="0,0,0,6">
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                        <RadioButton x:Name="RbChat" Content="Чат / группа" IsChecked="True"
+                                                     GroupName="ExportMode" Foreground="{StaticResource Brush.Text}"
+                                                     Margin="0,0,18,0" VerticalContentAlignment="Center" FontSize="12"
+                                                     Checked="RbMode_Checked"/>
+                                        <RadioButton x:Name="RbChannel" Content="Канал"
+                                                     GroupName="ExportMode" Foreground="{StaticResource Brush.Text}"
+                                                     VerticalContentAlignment="Center" FontSize="12"
+                                                     Checked="RbMode_Checked"/>
+                                    </StackPanel>
+                                </Border>
+                                <TextBlock x:Name="LblModeHint" TextWrapping="Wrap" FontSize="11" Foreground="#7eb8e8"
+                                           Margin="0,0,0,6" Text="Чат: HTML + медиа по год/месяц."/>
+                                <!-- Папка -->
+                                <TextBlock Text="Папка экспорта" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,0,0,3"/>
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="4"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="TxtExportFolder" Grid.Column="0" IsReadOnly="True"
+                                             AllowDrop="True" Drop="TxtExportFolder_Drop" DragOver="TxtExportFolder_DragOver"/>
+                                    <Button Grid.Column="2" Content="…" Style="{StaticResource GhostButton}" Padding="10,5" Click="BtnPickFolder_OnClick"/>
+                                </Grid>
+                                <!-- Качество и страниц -->
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="6"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="Качество медиа" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,0,0,3"/>
+                                        <ComboBox x:Name="CmbMediaQuality" SelectedIndex="0" Padding="6,5">
+                                            <ComboBoxItem Content="Оригинал" Tag="original"/>
+                                            <ComboBoxItem Content="Сжатое" Tag="compressed"/>
+                                            <ComboBoxItem Content="Миниатюры" Tag="thumbs"/>
+                                            <ComboBoxItem Content="Без медиа" Tag="none"/>
+                                        </ComboBox>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="Сообщ. на страницу" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,0,0,3"/>
+                                        <ComboBox x:Name="CmbPageSize" SelectedIndex="1" Padding="6,5">
+                                            <ComboBoxItem Content="100" Tag="100"/>
+                                            <ComboBoxItem Content="250" Tag="250"/>
+                                            <ComboBoxItem Content="500" Tag="500"/>
+                                        </ComboBox>
+                                    </StackPanel>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Фильтр дат -->
+                        <Expander Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Text}"
+                                  BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
+                                  Margin="0,0,0,5" Padding="12,8" Header="Фильтр по датам">
+                            <StackPanel Margin="0,6,0,0">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="6"/><ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="С" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,0,0,3"/>
+                                        <DatePicker x:Name="DpFrom" BorderBrush="{StaticResource Brush.Border}"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="По" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,0,0,3"/>
+                                        <DatePicker x:Name="DpTo" BorderBrush="{StaticResource Brush.Border}"/>
+                                    </StackPanel>
+                                </Grid>
+                                <Button Content="Сбросить" Style="{StaticResource GhostButton}" Margin="0,6,0,0"
+                                        HorizontalAlignment="Left" Padding="12,5" Click="BtnClearDates_Click"/>
+                            </StackPanel>
+                        </Expander>
+
+                        <!-- Типы медиа -->
+                        <Expander Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Text}"
+                                  BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
+                                  Margin="0,0,0,5" Padding="12,8" Header="Типы медиа">
+                            <UniformGrid Columns="2" Margin="0,6,0,0">
+                                <CheckBox x:Name="ChkPhotos"    Content="Фото"         IsChecked="True" Foreground="{StaticResource Brush.Text}" Margin="0,0,0,5" FontSize="12"/>
+                                <CheckBox x:Name="ChkVideos"    Content="Видео"        IsChecked="True" Foreground="{StaticResource Brush.Text}" Margin="0,0,0,5" FontSize="12"/>
+                                <CheckBox x:Name="ChkDocuments" Content="Документы"    IsChecked="True" Foreground="{StaticResource Brush.Text}" Margin="0,0,0,5" FontSize="12"/>
+                                <CheckBox x:Name="ChkVoice"     Content="Голос/кружки" IsChecked="True" Foreground="{StaticResource Brush.Text}" Margin="0,0,0,5" FontSize="12"/>
+                                <CheckBox x:Name="ChkStickers"  Content="Стикеры"      IsChecked="True" Foreground="{StaticResource Brush.Text}" FontSize="12"/>
+                            </UniformGrid>
+                        </Expander>
+
+                        <!-- Формат вывода -->
+                        <Expander Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Text}"
+                                  BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
+                                  Margin="0,0,0,5" Padding="12,8" Header="Формат вывода">
+                            <UniformGrid Columns="2" Margin="0,6,0,0">
+                                <CheckBox x:Name="ChkIncremental"  Content="Инкремент"       IsChecked="True"  Foreground="{StaticResource Brush.Text}" Margin="0,0,0,5" FontSize="12"/>
+                                <CheckBox x:Name="ChkExportJson"   Content="messages.json"   IsChecked="True"  Foreground="{StaticResource Brush.Text}" Margin="0,0,0,5" FontSize="12"/>
+                                <CheckBox x:Name="ChkExportSqlite" Content="messages.db"     IsChecked="True"  Foreground="{StaticResource Brush.Text}" Margin="0,0,0,5" FontSize="12"/>
+                                <CheckBox x:Name="ChkStatistics"   Content="Статистика"      IsChecked="True"  Foreground="{StaticResource Brush.Text}" Margin="0,0,0,5" FontSize="12"/>
+                                <CheckBox x:Name="ChkLongTexts"    Content="Длинные тексты"  IsChecked="True"  Foreground="{StaticResource Brush.Text}" Margin="0,0,0,5" FontSize="12"/>
+                                <CheckBox x:Name="ChkAlbums"       Content="Альбомы"         IsChecked="True"  Foreground="{StaticResource Brush.Text}" Margin="0,0,0,5" FontSize="12"/>
+                                <CheckBox x:Name="ChkThreads"      Content="Треды"           IsChecked="True"  Foreground="{StaticResource Brush.Text}" Margin="0,0,0,5" FontSize="12"/>
+                                <CheckBox x:Name="ChkForwarded"    Content="Пересланные"     IsChecked="True"  Foreground="{StaticResource Brush.Text}" Margin="0,0,0,5" FontSize="12"/>
+                                <CheckBox x:Name="ChkDedup"        Content="Дедупликация"    IsChecked="True"  Foreground="{StaticResource Brush.Text}" Margin="0,0,0,5" FontSize="12"/>
+                                <CheckBox x:Name="ChkZip"          Content="ZIP-архив"       IsChecked="False" Foreground="{StaticResource Brush.Text}" FontSize="12"/>
+                            </UniformGrid>
+                        </Expander>
+
+                        <!-- Скорость -->
+                        <Expander Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Text}"
+                                  BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
+                                  Margin="0,0,0,5" Padding="12,8" Header="Скорость и задержки">
+                            <StackPanel Margin="0,6,0,0">
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="6"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="Параллельных" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,0,0,3"/>
+                                        <Slider x:Name="SliderParallel" Minimum="1" Maximum="4" Value="2" TickFrequency="1" IsSnapToTickEnabled="True"/>
+                                        <TextBlock x:Name="LblParallel" Text="2" FontSize="11" Foreground="{StaticResource Brush.Muted}"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="Пауза медиа (мс)" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,0,0,3"/>
+                                        <Slider x:Name="SliderMediaDelay" Minimum="200" Maximum="2500" Value="450" TickFrequency="50" IsSnapToTickEnabled="True"/>
+                                        <TextBlock x:Name="LblMediaDelay" Text="450 мс" FontSize="11" Foreground="{StaticResource Brush.Muted}"/>
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Text="Пауза между запросами (мс)" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,8,0,3"/>
+                                <Slider x:Name="SliderHistoryDelay" Minimum="400" Maximum="3000" Value="900" TickFrequency="200" IsSnapToTickEnabled="True"/>
+                                <TextBlock x:Name="LblHistoryDelay" Text="900 мс" FontSize="11" Foreground="{StaticResource Brush.Muted}"/>
+                            </StackPanel>
+                        </Expander>
+
+                        <!-- Очередь -->
+                        <Expander Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Text}"
+                                  BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
+                                  Margin="0,0,0,5" Padding="12,8" Header="Очередь экспорта">
+                            <StackPanel Margin="0,6,0,0">
+                                <TextBlock Text="Ctrl+клик для выбора нескольких чатов"
+                                           TextWrapping="Wrap" FontSize="11" Foreground="{StaticResource Brush.Muted}" Margin="0,0,0,6"/>
+                                <Button x:Name="BtnAddToQueue" Content="+ Добавить выбранные" Style="{StaticResource GhostButton}"
+                                        HorizontalAlignment="Stretch" Padding="0,6" Click="BtnAddToQueue_Click" FontSize="12"/>
+                                <ListBox x:Name="ListQueue" Margin="0,6,0,0" MaxHeight="80"
+                                         FontSize="11" Foreground="{StaticResource Brush.Text}">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis"/>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                                    <Button x:Name="BtnRunQueue" Content="▶ Запустить" Style="{StaticResource PrimaryButton}"
+                                            Padding="14,7" FontSize="12" Click="BtnRunQueue_Click"/>
+                                    <Button Content="Очистить" Style="{StaticResource GhostButton}" Margin="5,0,0,0"
+                                            Padding="10,7" FontSize="12" Click="BtnClearQueue_Click"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Expander>
+
+                        <!-- История -->
+                        <Expander Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Text}"
+                                  BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
+                                  Margin="0,0,0,5" Padding="12,8" Header="История экспортов">
+                            <StackPanel Margin="0,6,0,0">
+                                <ListBox x:Name="ListHistory" MaxHeight="100"
+                                         FontSize="11" Foreground="{StaticResource Brush.Text}"
+                                         MouseDoubleClick="ListHistory_DoubleClick">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding DisplayLine}" FontSize="11" TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Text="{Binding OutputPath}" FontSize="10" Foreground="{StaticResource Brush.Muted}" TextTrimming="CharacterEllipsis"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                                    <Button Content="Открыть папку" Style="{StaticResource GhostButton}"
+                                            Padding="10,6" FontSize="12" Click="BtnOpenHistoryFolder_Click"/>
+                                    <Button Content="Проверить файлы" Style="{StaticResource GhostButton}" Margin="5,0,0,0"
+                                            Padding="10,6" FontSize="12" Click="BtnIntegrityCheck_Click"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Expander>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- ─── СПЛИТТЕР ─── -->
+                <GridSplitter Grid.Row="1"
+                              HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                              Background="#2b3f52" Cursor="SizeNS"
+                              ShowsPreview="False"
+                              ResizeDirection="Rows" ResizeBehavior="PreviousAndNext"/>
+
+                <!-- ─── ПРОГРЕСС + ЛОГ (нижняя половина) ─── -->
+                <Grid Grid.Row="2">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>  <!-- блок прогресса -->
+                        <RowDefinition Height="*"/>     <!-- лог -->
+                    </Grid.RowDefinitions>
+
+                    <!-- Блок прогресса -->
+                    <Border Grid.Row="0" Background="#111922" CornerRadius="10" BorderBrush="#243b52" BorderThickness="1" Padding="12,10" Margin="0,4,0,5">
+                        <StackPanel>
+                            <Grid Margin="0,0,0,7">
+                                <TextBlock x:Name="LblExportPhase" FontWeight="SemiBold" FontSize="14" Foreground="{StaticResource Brush.Text}" Text="Готов к экспорту" VerticalAlignment="Center"/>
+                                <StackPanel HorizontalAlignment="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock x:Name="LblExportPercent" FontSize="13" Foreground="{StaticResource Brush.Muted}" Margin="0,0,8,0" Text=""/>
+                                    <TextBlock x:Name="LblExportBytes" FontSize="12" Foreground="#7eb8e8" Text=""/>
+                                </StackPanel>
+                            </Grid>
+                            <ProgressBar x:Name="ExportProgressBar" Style="{StaticResource ExportProgressBar}" Value="0"/>
+                            <TextBlock x:Name="LblExportSub" Margin="0,6,0,0" FontSize="11" Foreground="{StaticResource Brush.Muted}" TextWrapping="Wrap" Text=""/>
+                            <TextBlock x:Name="LblExportEta" Margin="0,2,0,0" FontSize="11" Foreground="#6ab889" TextWrapping="Wrap" Visibility="Collapsed" Text=""/>
+                            <TextBlock x:Name="LblExportCurrentFile" Margin="0,2,0,0" FontSize="10" Foreground="#5a7a9a" TextTrimming="CharacterEllipsis" Visibility="Collapsed" Text=""/>
+                            <!-- Статы — 2 ряда по 4 -->
+                            <UniformGrid Columns="4" Rows="2" Margin="0,8,0,0">
+                                <Border x:Name="CardStatPhotos" Background="#1a2836" CornerRadius="6" Padding="6,5" Margin="0,0,4,4" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <TextBlock Text="Фото" FontSize="9" Foreground="{StaticResource Brush.Muted}"/>
+                                        <TextBlock x:Name="LblStatPhotos" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource Brush.Text}" Text="0"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border x:Name="CardStatVideos" Background="#1a2836" CornerRadius="6" Padding="6,5" Margin="0,0,4,4" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <TextBlock Text="Видео" FontSize="9" Foreground="{StaticResource Brush.Muted}"/>
+                                        <TextBlock x:Name="LblStatVideos" FontSize="15" FontWeight="SemiBold" Foreground="#7eb8e8" Text="0"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border x:Name="CardStatGifs" Background="#1a2836" CornerRadius="6" Padding="6,5" Margin="0,0,4,4" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <TextBlock Text="GIF" FontSize="9" Foreground="{StaticResource Brush.Muted}"/>
+                                        <TextBlock x:Name="LblStatGifs" FontSize="15" FontWeight="SemiBold" Foreground="#c9a86c" Text="0"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border x:Name="CardStatDocs" Background="#1a2836" CornerRadius="6" Padding="6,5" Margin="0,0,0,4" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <TextBlock Text="Файлы" FontSize="9" Foreground="{StaticResource Brush.Muted}"/>
+                                        <TextBlock x:Name="LblStatDocs" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource Brush.Text}" Text="0"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border x:Name="CardStatVoices" Background="#1a2836" CornerRadius="6" Padding="6,5" Margin="0,0,4,0" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <TextBlock Text="Голос" FontSize="9" Foreground="{StaticResource Brush.Muted}"/>
+                                        <TextBlock x:Name="LblStatVoices" FontSize="15" FontWeight="SemiBold" Foreground="#9bc4a8" Text="0"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border x:Name="CardStatStickers" Background="#1a2836" CornerRadius="6" Padding="6,5" Margin="0,0,4,0" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <TextBlock Text="Стик." FontSize="9" Foreground="{StaticResource Brush.Muted}"/>
+                                        <TextBlock x:Name="LblStatStickers" FontSize="15" FontWeight="SemiBold" Foreground="#b8a0d4" Text="0"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border x:Name="CardStatSkipped" Background="#1a2836" CornerRadius="6" Padding="6,5" Margin="0,0,4,0" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <TextBlock Text="Пропуск" FontSize="9" Foreground="{StaticResource Brush.Muted}"/>
+                                        <TextBlock x:Name="LblStatSkipped" FontSize="15" FontWeight="SemiBold" Foreground="#8b9bab" Text="0"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border x:Name="CardStatMediaTotal" Background="#1e3248" CornerRadius="6" Padding="6,5" Margin="0,0,0,0" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <TextBlock Text="Всего" FontSize="9" Foreground="{StaticResource Brush.Muted}"/>
+                                        <TextBlock x:Name="LblStatMediaTotal" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource Brush.Accent}" Text="0/0"/>
+                                    </StackPanel>
+                                </Border>
+                            </UniformGrid>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Лог (TextBox с прокруткой) -->
+                    <TextBox Grid.Row="1"
+                             x:Name="TxtLog"
+                             IsReadOnly="True"
+                             TextWrapping="Wrap"
+                             VerticalScrollBarVisibility="Auto"
+                             HorizontalScrollBarVisibility="Disabled"
+                             Background="#101820"
+                             Foreground="#a8bcd0"
+                             BorderBrush="{StaticResource Brush.Border}"
+                             BorderThickness="1"
+                             FontFamily="Consolas, Courier New"
+                             FontSize="11"
+                             Padding="8"
+                             AcceptsReturn="True"
+                             VerticalContentAlignment="Top"/>
+                </Grid>
+
+                <!-- ─── КНОПКИ + ВЫБРАННЫЙ ЧАТ ─── -->
+                <Grid Grid.Row="3" Margin="0,6,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock x:Name="TxtSelectedChat" Grid.Row="0" TextWrapping="Wrap" Margin="0,0,0,6"
+                               Foreground="{StaticResource Brush.Muted}" FontSize="12" Text="Чат не выбран"/>
+                    <StackPanel Grid.Row="1" Orientation="Horizontal">
+                        <Button x:Name="BtnExport" Content="▶ Экспортировать" Style="{StaticResource PrimaryButton}"
+                                Padding="16,9" FontSize="13" Click="BtnExport_OnClick" IsEnabled="False"/>
+                        <Button x:Name="BtnPreview" Content="Обзор" Style="{StaticResource GhostButton}"
+                                Margin="5,0,0,0" Padding="12,9" FontSize="13" Click="BtnPreview_Click" IsEnabled="False"/>
+                        <Button x:Name="BtnCancelExport" Content="■ Стоп" Style="{StaticResource GhostButton}"
+                                Margin="5,0,0,0" Padding="12,9" FontSize="13" Click="BtnCancelExport_OnClick" IsEnabled="False"/>
+                    </StackPanel>
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+
+    <!-- Горячие клавиши -->
+    <Window.InputBindings>
+        <KeyBinding Modifiers="Ctrl" Key="E" Command="{x:Null}" CommandParameter="export"/>
+        <KeyBinding Key="Escape" Command="{x:Null}" CommandParameter="cancel"/>
+        <KeyBinding Modifiers="Ctrl" Key="O" Command="{x:Null}" CommandParameter="openfolder"/>
+    </Window.InputBindings>
+</Window>
