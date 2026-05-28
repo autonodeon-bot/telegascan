@@ -1,10 +1,13 @@
 <Window x:Class="TelegaScan.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:TelegaScan.Controls"
         Title="TelegaScan — архив чатов Telegram"
+        Icon="/Assets/AppIcon.ico"
         MinWidth="1120" MinHeight="720"
         Width="1280" Height="860"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen"
+        Closing="MainWindow_OnClosing">
     <Grid>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="280"/>
@@ -16,7 +19,12 @@
              Левая панель: подключение
              ══════════════════════════════════════ -->
         <Border Grid.Column="0" Padding="18,18,12,18" Background="#0e1621">
-            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+            <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel>
                     <TextBlock FontSize="20" FontWeight="SemiBold" Text="TelegaScan" Margin="0,0,0,2" Foreground="{StaticResource Brush.Text}"/>
                     <TextBlock Foreground="{StaticResource Brush.Muted}" TextWrapping="Wrap" FontSize="12" Margin="0,0,0,16"
@@ -30,7 +38,18 @@
                             <TextBlock Text="api_hash" Foreground="{StaticResource Brush.Muted}" FontSize="11"/>
                             <TextBox x:Name="TxtApiHash" Margin="0,3,0,8" LostFocus="Credentials_OnLostFocus"/>
                             <TextBlock Text="Телефон (с +)" Foreground="{StaticResource Brush.Muted}" FontSize="11"/>
-                            <TextBox x:Name="TxtPhone" Margin="0,3,0,12" LostFocus="Credentials_OnLostFocus"/>
+                            <TextBox x:Name="TxtPhone" Margin="0,3,0,8" LostFocus="Credentials_OnLostFocus"/>
+                            <TextBlock Text="Аккаунт" Foreground="{StaticResource Brush.Muted}" FontSize="11"/>
+                            <Grid Margin="0,3,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="4"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="CmbAccounts" Grid.Column="0" Padding="6,5" SelectionChanged="CmbAccounts_OnSelectionChanged"/>
+                                <Button x:Name="BtnAddAccount" Grid.Column="2" Content="+ Аккаунт" Style="{StaticResource GhostButton}"
+                                        Padding="8,5" FontSize="11" Click="BtnAddAccount_Click" ToolTip="Добавить новый аккаунт (введите телефон выше)"/>
+                            </Grid>
                             <Button x:Name="BtnConnect" Content="Подключиться" Style="{StaticResource PrimaryButton}" Click="BtnConnect_OnClick"/>
                         </StackPanel>
                     </Border>
@@ -56,6 +75,13 @@
                     </Border>
                 </StackPanel>
             </ScrollViewer>
+                <TextBlock Grid.Row="1" FontSize="11" Margin="0,10,0,0" TextWrapping="Wrap">
+                    <Hyperlink NavigateUri="https://t.me/NobodyYety" RequestNavigate="DeveloperLink_RequestNavigate"
+                               Foreground="{StaticResource Brush.Accent}">
+                        Разработчик @NobodyYety
+                    </Hyperlink>
+                </TextBlock>
+            </Grid>
         </Border>
 
         <!-- ══════════════════════════════════════
@@ -68,6 +94,7 @@
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="2*"/>
                     <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
@@ -75,9 +102,41 @@
                 <!-- Заголовок и фильтр -->
                 <StackPanel Grid.Row="0" Margin="0,0,0,6">
                     <TextBlock Text="Чаты и каналы" FontWeight="SemiBold" FontSize="15" Foreground="{StaticResource Brush.Text}" Margin="0,0,0,2"/>
-                    <TextBlock Text="Отметьте чекбоксами или выделите — каждый скачается в свою папку по очереди"
+                    <TextBlock Text="Отмечайте чекбоксами (можно сотни) — «+ В очередь», затем «Скачать». Пока идёт скачивание, можно добавлять ещё."
                                TextWrapping="Wrap" FontSize="11" Foreground="{StaticResource Brush.Muted}" Margin="0,0,0,6"/>
                     <TextBox x:Name="TxtFilter" ToolTip="Фильтр по названию" TextChanged="TxtFilter_OnTextChanged"/>
+                    <Grid Margin="0,6,0,0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="6"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="6"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <ComboBox x:Name="CmbChatSort" Grid.Row="0" Grid.Column="0" Padding="6,5" Margin="0,0,0,6"
+                                  SelectionChanged="CmbChatSort_OnSelectionChanged" ToolTip="Порядок списка чатов">
+                            <ComboBoxItem Content="Сначала недавние" Tag="last" IsSelected="True"/>
+                            <ComboBoxItem Content="По имени" Tag="name"/>
+                            <ComboBoxItem Content="По числу сообщений" Tag="count"/>
+                        </ComboBox>
+                        <Button x:Name="BtnSortDirection" Grid.Row="0" Grid.Column="2" Content="↓" Style="{StaticResource GhostButton}"
+                                Padding="8,5" Margin="0,0,0,6" FontSize="13" Click="BtnSortDirection_Click"
+                                ToolTip="Сменить направление сортировки (А→Я / Я→А)"/>
+                        <ComboBox x:Name="CmbTypeFilter" Grid.Row="1" Grid.Column="0" Padding="6,5" SelectionChanged="CmbTypeFilter_OnSelectionChanged">
+                            <ComboBoxItem Content="Все типы" Tag="all" IsSelected="True"/>
+                            <ComboBoxItem Content="Личные" Tag="personal"/>
+                            <ComboBoxItem Content="Группы" Tag="group"/>
+                            <ComboBoxItem Content="Супергруппы" Tag="supergroup"/>
+                            <ComboBoxItem Content="Каналы" Tag="channel"/>
+                            <ComboBoxItem Content="Боты" Tag="bot"/>
+                        </ComboBox>
+                        <CheckBox x:Name="ChkArchivedOnly" Grid.Row="0" Grid.RowSpan="2" Grid.Column="4" Content="Архив" VerticalAlignment="Center"
+                                  Foreground="{StaticResource Brush.Muted}" FontSize="11" Checked="TypeFilter_Changed" Unchecked="TypeFilter_Changed"/>
+                    </Grid>
                 </StackPanel>
 
                 <!-- Панель выбора -->
@@ -96,13 +155,28 @@
                         </StackPanel>
                         <TextBlock x:Name="LblMarkedCount" Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Center"
                                    FontSize="11" Foreground="{StaticResource Brush.Muted}" Text="Отмечено: 0"/>
-                        <Button x:Name="BtnAddToQueue" Grid.Column="2" Content="+ В очередь" Style="{StaticResource PrimaryButton}"
-                                Padding="12,6" FontSize="12" Click="BtnAddToQueue_Click" ToolTip="Добавить отмеченные и выделенные чаты в очередь"/>
+                        <Button x:Name="BtnAddMarkedToQueue" Grid.Column="2" Content="+ В очередь" Style="{StaticResource PrimaryButton}"
+                                Padding="12,6" FontSize="12" Click="BtnAddToQueue_Click" ToolTip="Добавить все отмеченные чекбоксами (Ctrl+Shift+Q)"/>
                     </Grid>
                 </Border>
 
-                <!-- Список чатов с чекбоксами -->
-                <ListBox x:Name="ListChats" Grid.Row="2" SelectionMode="Extended" SelectionChanged="ListChats_OnSelectionChanged">
+                <!-- Список чатов с чекбоксами (виртуализация для больших списков) -->
+                <ListBox x:Name="ListChats" Grid.Row="2"
+                         SelectionMode="Single"
+                         VirtualizingPanel.IsVirtualizing="True"
+                         VirtualizingPanel.VirtualizationMode="Recycling"
+                         ScrollViewer.CanContentScroll="True"
+                         PreviewMouseLeftButtonDown="ListChats_PreviewMouseLeftButtonDown"
+                         SelectionChanged="ListChats_OnSelectionChanged">
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsMarked}" Value="True">
+                                    <Setter Property="Background" Value="#1a2e42"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ListBox.ItemContainerStyle>
                     <ListBox.ItemTemplate>
                         <DataTemplate>
                             <Grid>
@@ -111,12 +185,18 @@
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
                                 <CheckBox Grid.Column="0" IsChecked="{Binding IsMarked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                          Focusable="False"
                                           VerticalAlignment="Center" Margin="0,0,10,0"
                                           Checked="ChatMark_Changed" Unchecked="ChatMark_Changed"
+                                          PreviewMouseLeftButtonDown="ChatCheckBox_PreviewMouseLeftButtonDown"
                                           ToolTip="Отметить для очереди"/>
                                 <StackPanel Grid.Column="1">
-                                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Foreground="White"/>
-                                    <TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource Brush.Muted}" FontSize="11" TextTrimming="CharacterEllipsis"/>
+                                    <controls:HighlightTextBlock SourceText="{Binding Title}" HighlightQuery="{Binding Text, ElementName=TxtFilter}"
+                                                                 FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Foreground="White"/>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource Brush.Muted}" FontSize="11" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Text="{Binding CountHint}" Foreground="#6ab889" FontSize="10"/>
+                                    </StackPanel>
                                 </StackPanel>
                             </Grid>
                         </DataTemplate>
@@ -129,16 +209,58 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="6"/>
+                            <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="Очередь скачивания" FontWeight="SemiBold" FontSize="13" Foreground="{StaticResource Brush.Text}" VerticalAlignment="Center"/>
                         <TextBlock x:Name="LblQueueSummary" Grid.Column="1" FontSize="11" Foreground="{StaticResource Brush.Muted}"
                                    VerticalAlignment="Center" Text="пусто"/>
+                        <Button x:Name="BtnClearQueue" Grid.Column="3" Content="Очистить очередь" Style="{StaticResource GhostButton}"
+                                Padding="8,4" FontSize="11" Click="BtnClearQueue_Click"
+                                ToolTip="Удалить все чаты из очереди (включая скрытые и сохранённые на диск)"/>
                     </Grid>
                 </Border>
 
+                <StackPanel x:Name="PanelQueueProgress" Grid.Row="4" Visibility="Collapsed" Margin="0,0,0,4">
+                    <TextBlock x:Name="LblQueueCurrentChat" FontSize="11" Foreground="{StaticResource Brush.Muted}" TextWrapping="Wrap"/>
+                    <Grid x:Name="GridQueueSegments" Height="12" Margin="0,4,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="3"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="3"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Border x:Name="SegQueueTextBg" Grid.Column="0" Background="#1a2836" CornerRadius="2,0,0,2" ClipToBounds="True">
+                            <Border x:Name="SegQueueTextFill" HorizontalAlignment="Left" Background="#5288c1" CornerRadius="2" Width="0"/>
+                        </Border>
+                        <Border x:Name="SegQueueMediaBg" Grid.Column="2" Background="#1a2836" ClipToBounds="True">
+                            <Border x:Name="SegQueueMediaFill" HorizontalAlignment="Left" Background="#6ab889" Width="0"/>
+                        </Border>
+                        <Border x:Name="SegQueueAuxBg" Grid.Column="4" Background="#1a2836" CornerRadius="0,2,2,0" ClipToBounds="True">
+                            <Border x:Name="SegQueueAuxFill" HorizontalAlignment="Left" Background="#c9a86c" Width="0"/>
+                        </Border>
+                    </Grid>
+                    <Grid Margin="0,2,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="LblSegQueueText" Grid.Column="0" Text="Текст 0%" FontSize="9" Foreground="#8b9bab"/>
+                        <TextBlock x:Name="LblSegQueueMedia" Grid.Column="1" Text="Медиа 0%" FontSize="9" Foreground="#8b9bab" HorizontalAlignment="Center"/>
+                        <TextBlock x:Name="LblSegQueueAux" Grid.Column="2" Text="Файлы 0%" FontSize="9" Foreground="#8b9bab" HorizontalAlignment="Right"/>
+                    </Grid>
+                </StackPanel>
+
                 <!-- Очередь -->
-                <ListBox x:Name="ListQueue" Grid.Row="4" ItemContainerStyle="{StaticResource CompactListBoxItem}"
-                         MinHeight="80" MaxHeight="200" SelectionChanged="ListQueue_OnSelectionChanged">
+                <ListBox x:Name="ListQueue" Grid.Row="5" ItemContainerStyle="{StaticResource CompactListBoxItem}"
+                         MinHeight="80" MaxHeight="200" AllowDrop="True"
+                         PreviewMouseLeftButtonDown="ListQueue_PreviewMouseLeftButtonDown"
+                         PreviewMouseMove="ListQueue_PreviewMouseMove"
+                         Drop="ListQueue_Drop"
+                         DragOver="ListQueue_DragOver"
+                         SelectionChanged="ListQueue_OnSelectionChanged">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
                             <Grid>
@@ -179,28 +301,46 @@
                                         </Style>
                                     </TextBlock.Style>
                                 </TextBlock>
-                                <Button Grid.Column="3" Content="✕" Style="{StaticResource GhostButton}" Padding="6,2" FontSize="10"
-                                        Tag="{Binding}" Click="BtnRemoveFromQueue_Click" ToolTip="Убрать из очереди"/>
+                                <StackPanel Grid.Column="3" Orientation="Horizontal">
+                                    <Button Content="↻" Style="{StaticResource GhostButton}" Padding="6,2" FontSize="10" Margin="0,0,2,0"
+                                            Tag="{Binding}" Click="BtnRetryQueueItem_Click" ToolTip="Повторить"/>
+                                    <Button Content="✕" Style="{StaticResource GhostButton}" Padding="6,2" FontSize="10"
+                                            Tag="{Binding}" Click="BtnRemoveFromQueue_Click" ToolTip="Убрать из очереди"/>
+                                </StackPanel>
                             </Grid>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
 
                 <!-- Кнопки очереди -->
-                <Grid Grid.Row="5" Margin="0,6,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock x:Name="LblQueueFolderHint" Grid.Column="0" VerticalAlignment="Center" FontSize="10"
-                               Foreground="{StaticResource Brush.Muted}" TextWrapping="Wrap"
+                <StackPanel Grid.Row="6" Margin="0,6,0,0">
+                    <TextBlock x:Name="LblQueueFolderHint" FontSize="10" Foreground="{StaticResource Brush.Muted}" TextWrapping="Wrap"
                                Text="Каждый чат → отдельная подпапка в папке экспорта"/>
-                    <Button x:Name="BtnRunQueue" Grid.Column="1" Content="▶ Скачать очередь" Style="{StaticResource PrimaryButton}"
-                            Padding="14,8" FontSize="12" Margin="6,0,0,0" Click="BtnRunQueue_Click" IsEnabled="False"/>
-                    <Button x:Name="BtnClearQueue" Grid.Column="2" Content="Очистить" Style="{StaticResource GhostButton}"
-                            Padding="10,8" FontSize="12" Margin="4,0,0,0" Click="BtnClearQueue_Click"/>
-                </Grid>
+                    <WrapPanel Margin="0,6,0,0">
+                        <Button x:Name="BtnRunQueue" Content="▶ Скачать" Style="{StaticResource PrimaryButton}"
+                                Padding="12,7" FontSize="12" Margin="0,0,4,4" Click="BtnRunQueue_Click" IsEnabled="False"/>
+                        <Button x:Name="BtnPauseQueue" Content="⏸ Пауза" Style="{StaticResource GhostButton}"
+                                Padding="10,7" FontSize="12" Margin="0,0,4,4" Click="BtnPauseQueue_Click" IsEnabled="False"/>
+                        <Button x:Name="BtnRetryFailed" Content="↻ Ошибки" Style="{StaticResource GhostButton}"
+                                Padding="10,7" FontSize="12" Margin="0,0,4,4" Click="BtnRetryFailed_Click"/>
+                        <Button x:Name="BtnEstimateMarked" Content="≈ Оценка" Style="{StaticResource GhostButton}"
+                                Padding="10,7" FontSize="12" Margin="0,0,4,4" Click="BtnEstimateMarked_Click"/>
+                        <Button x:Name="BtnTextOnlyPreset" Content="Только текст" Style="{StaticResource GhostButton}"
+                                Padding="10,7" FontSize="12" Margin="0,0,4,4" Click="BtnTextOnlyPreset_Click"/>
+                    </WrapPanel>
+                    <Grid Margin="0,4,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="4"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="4"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <ComboBox x:Name="CmbQueueProfiles" Grid.Column="0" Padding="6,5" ToolTip="Профили списков очереди"/>
+                        <Button Grid.Column="2" Content="Сохранить" Style="{StaticResource GhostButton}" Padding="8,5" FontSize="11" Click="BtnSaveProfile_Click"/>
+                        <Button Grid.Column="4" Content="Загрузить" Style="{StaticResource GhostButton}" Padding="8,5" FontSize="11" Click="BtnLoadProfile_Click"/>
+                    </Grid>
+                </StackPanel>
             </Grid>
         </Border>
 
@@ -334,6 +474,32 @@
                             </UniformGrid>
                         </Expander>
 
+                        <!-- Планировщик и уведомления -->
+                        <Expander Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Text}"
+                                  BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
+                                  Margin="0,0,0,5" Padding="12,8" Header="Планировщик и уведомления">
+                            <StackPanel Margin="0,6,0,0">
+                                <CheckBox x:Name="ChkScheduler" Content="Запускать очередь по расписанию" Foreground="{StaticResource Brush.Text}" FontSize="12"/>
+                                <Grid Margin="0,6,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Время (ЧЧ:ММ)" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <TextBox x:Name="TxtSchedulerTime" Grid.Column="1" Text="03:00" ToolTip="Например 03:00 — раз в сутки"/>
+                                </Grid>
+                                <CheckBox x:Name="ChkEnableToast" Content="Уведомления Windows" IsChecked="True" Margin="0,6,0,0" Foreground="{StaticResource Brush.Text}" FontSize="12"/>
+                                <CheckBox x:Name="ChkEnableFileLog" Content="Лог в файл (TelegaScan.log)" IsChecked="True" Margin="0,4,0,0" Foreground="{StaticResource Brush.Text}" FontSize="12"/>
+                                <TextBlock Text="Повторов при сбое" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,8,0,3"/>
+                                <ComboBox x:Name="CmbRetryCount" SelectedIndex="2" Padding="6,5">
+                                    <ComboBoxItem Content="1" Tag="1"/>
+                                    <ComboBoxItem Content="2" Tag="2"/>
+                                    <ComboBoxItem Content="3" Tag="3"/>
+                                    <ComboBoxItem Content="5" Tag="5"/>
+                                </ComboBox>
+                            </StackPanel>
+                        </Expander>
+
                         <!-- Скорость -->
                         <Expander Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Text}"
                                   BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
@@ -411,6 +577,34 @@
                                 </StackPanel>
                             </Grid>
                             <ProgressBar x:Name="ExportProgressBar" Style="{StaticResource ExportProgressBar}" Value="0"/>
+                            <Grid x:Name="GridExportSegments" Height="12" Margin="0,6,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="3"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="3"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Grid.Column="0" Background="#1a2836" CornerRadius="2,0,0,2" ClipToBounds="True">
+                                    <Border x:Name="SegExportTextFill" HorizontalAlignment="Left" Background="#5288c1" CornerRadius="2" Width="0"/>
+                                </Border>
+                                <Border Grid.Column="2" Background="#1a2836" ClipToBounds="True">
+                                    <Border x:Name="SegExportMediaFill" HorizontalAlignment="Left" Background="#6ab889" Width="0"/>
+                                </Border>
+                                <Border Grid.Column="4" Background="#1a2836" CornerRadius="0,2,2,0" ClipToBounds="True">
+                                    <Border x:Name="SegExportAuxFill" HorizontalAlignment="Left" Background="#c9a86c" Width="0"/>
+                                </Border>
+                            </Grid>
+                            <Grid Margin="0,2,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="LblSegExportText" Grid.Column="0" Text="Текст 0%" FontSize="9" Foreground="#8b9bab"/>
+                                <TextBlock x:Name="LblSegExportMedia" Grid.Column="1" Text="Медиа 0%" FontSize="9" Foreground="#8b9bab" HorizontalAlignment="Center"/>
+                                <TextBlock x:Name="LblSegExportAux" Grid.Column="2" Text="Файлы 0%" FontSize="9" Foreground="#8b9bab" HorizontalAlignment="Right"/>
+                            </Grid>
                             <TextBlock x:Name="LblExportSub" Margin="0,6,0,0" FontSize="11" Foreground="{StaticResource Brush.Muted}" TextWrapping="Wrap" Text=""/>
                             <TextBlock x:Name="LblExportEta" Margin="0,2,0,0" FontSize="11" Foreground="#6ab889" TextWrapping="Wrap" Visibility="Collapsed" Text=""/>
                             <TextBlock x:Name="LblExportCurrentFile" Margin="0,2,0,0" FontSize="10" Foreground="#5a7a9a" TextTrimming="CharacterEllipsis" Visibility="Collapsed" Text=""/>

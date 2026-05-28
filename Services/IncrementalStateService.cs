@@ -13,6 +13,10 @@ public sealed class IncrementalState
     public long TotalMediaBytes { get; set; }
     public int TotalMessages { get; set; }
 
+    public bool TextExportComplete { get; set; }
+    public bool MediaExportComplete { get; set; }
+    public bool AuxExportComplete { get; set; }
+
     /// <summary>MD5-хеш → относительный путь файла (для дедупликации).</summary>
     public Dictionary<string, string> FileHashes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }

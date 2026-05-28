@@ -30,4 +30,10 @@ public sealed record ExportProgressReport(
     int ParticipantStep,
     int ParticipantTotal,
     bool ProgressIndeterminate,
-    double ProgressFraction);
+    double ProgressFraction,
+    /// <summary>0…1 — текст, HTML, участники.</summary>
+    double TextSegmentProgress,
+    /// <summary>0…1 — медиафайлы.</summary>
+    double MediaSegmentProgress,
+    /// <summary>0…1 — JSON, ZIP, статистика и пр.</summary>
+    double AuxSegmentProgress);

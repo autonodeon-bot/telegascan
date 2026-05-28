@@ -73,6 +73,10 @@ public static class ChatExportService
         var chats = new Dictionary<long, ChatBase>();
         TL.Services.CollectUsersChats(dialogs, users, chats);
 
+        var topMessages = new Dictionary<int, MessageBase>();
+        foreach (var m in dialogs.Messages)
+            topMessages[m.ID] = m;
+
         var list = new List<DialogListItem>();
         foreach (var db in dialogs.dialogs)
         {
@@ -89,26 +93,71 @@ public static class ChatExportService
             };
             if (peer is null) continue;
 
-            var (title, subtitle) = FormatDialogInfo(uc);
+            var (title, subtitle, kind) = FormatDialogInfo(uc);
             if (string.IsNullOrWhiteSpace(title)) continue;
 
-            list.Add(new DialogListItem { Title = title, Peer = peer, Subtitle = subtitle });
+            var isArchived = dlg.folder_id == 1;
+            var lastUtc = DateTime.MinValue;
+            if (dlg.top_message > 0 && topMessages.TryGetValue(dlg.top_message, out var topMb) && topMb is Message topMsg)
+            {
+                lastUtc = topMsg.Date.Kind == DateTimeKind.Utc
+                    ? topMsg.Date
+                    : topMsg.Date.ToUniversalTime();
+            }
+
+            list.Add(new DialogListItem
+            {
+                Title = title,
+                Peer = peer,
+                Subtitle = isArchived ? subtitle + " · Архив" : subtitle,
+                Kind = kind,
+                IsArchived = isArchived,
+                PeerId = ExportPathHelper.GetPeerId(peer),
+                LastMessageUtc = lastUtc
+            });
         }
 
-        list.Sort((a, b) => string.Compare(a.Title, b.Title, StringComparison.CurrentCultureIgnoreCase));
         return list;
     }
 
-    private static (string title, string sub) FormatDialogInfo(IPeerInfo uc) => uc switch
+    /// <summary>Подгружает общее число сообщений для сортировки (фоновые запросы к API).</summary>
+    public static async Task EnrichMessageCountsAsync(
+        Client client,
+        IEnumerable<DialogListItem> items,
+        CancellationToken ct,
+        Func<bool>? shouldStop = null)
     {
-        User u when u.IsBot => (UserName(u), $"Бот{Uname(u)}"),
-        User u => (UserName(u), $"Личный чат{Uname(u)}"),
-        Chat c => (c.title ?? "?", c.participants_count > 0 ? $"Группа · {c.participants_count} уч." : "Группа"),
+        var delay = TimeSpan.FromMilliseconds(400);
+        foreach (var item in items)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (shouldStop?.Invoke() == true) break;
+            if (item.MessageCount >= 0) continue;
+            try
+            {
+                var slice = await RateLimitedTelegram.ExecuteAsync(
+                    () => client.Messages_GetHistory(item.Peer, 0, limit: 1),
+                    delay, ct).ConfigureAwait(false);
+                item.MessageCount = slice.Count;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch
+            {
+                item.MessageCount = 0;
+            }
+        }
+    }
+
+    private static (string title, string sub, DialogKind kind) FormatDialogInfo(IPeerInfo uc) => uc switch
+    {
+        User u when u.IsBot => (UserName(u), $"Бот{Uname(u)}", DialogKind.Bot),
+        User u => (UserName(u), $"Личный чат{Uname(u)}", DialogKind.Personal),
+        Chat c => (c.title ?? "?", c.participants_count > 0 ? $"Группа · {c.participants_count} уч." : "Группа", DialogKind.Group),
         Channel ch when ch.flags.HasFlag(Channel.Flags.broadcast) =>
-            (ch.title ?? "?", ch.participants_count > 0 ? $"Канал · {ch.participants_count} подп." : "Канал"),
+            (ch.title ?? "?", ch.participants_count > 0 ? $"Канал · {ch.participants_count} подп." : "Канал", DialogKind.Channel),
         Channel ch =>
-            (ch.title ?? "?", ch.participants_count > 0 ? $"Группа · {ch.participants_count} уч." : "Группа"),
-        _ => (uc?.ToString() ?? "?", "")
+            (ch.title ?? "?", ch.participants_count > 0 ? $"Группа · {ch.participants_count} уч." : "Группа", DialogKind.Supergroup),
+        _ => (uc?.ToString() ?? "?", "", DialogKind.Personal)
     };
 
     private static string UserName(User u)
@@ -139,8 +188,11 @@ public static class ChatExportService
         // ─ Инкрементальное состояние ─────────────────────────────
         var state = options.Incremental ? IncrementalStateService.Load(outputRoot) : new IncrementalState();
         var prevLastId = state.LastMessageId;
+        var mediaEnabled = ExportCompletionTracker.IsMediaEnabled(options);
+        var auxEnabled = ExportCompletionTracker.IsAuxEnabled(options);
 
         var emit = progress is null ? null : new ExportProgressEmitter(progress);
+        emit?.ConfigureSegments(mediaEnabled, auxEnabled);
         emit?.SetPhase(ExportWorkPhase.History);
         if (options.Incremental && prevLastId > 0)
             emit?.Log($"Инкрементальный режим: продолжаем с сообщения #{prevLastId + 1}…");
@@ -149,51 +201,101 @@ public static class ChatExportService
 
         var (allSorted, users, chats) = await LoadAllMessagesAsync(client, peer, options, emit, ct);
 
-        // Фильтр по дате
+        // Фильтр по дате / инкремент
         var sorted = ApplyDateAndIncrementalFilter(allSorted, options, prevLastId);
         emit?.MessagesLoadedCount = sorted.Count;
 
-        if (sorted.Count == 0 && prevLastId > 0)
+        if (sorted.Count == 0 && prevLastId > 0
+            && ExportCompletionTracker.IsFullyComplete(outputRoot, state, options))
         {
-            emit?.Log("Нет новых сообщений. Экспорт завершён.");
+            emit?.Log("Нет новых сообщений. Экспорт полностью завершён.");
             emit?.SetPhase(ExportWorkPhase.Done);
             return;
         }
 
-        emit?.SetPhase(ExportWorkPhase.Participants);
-        emit?.Log($"Сообщений для обработки: {sorted.Count}. Загрузка участников…");
-        var members = await LoadParticipantsAsync(client, peer, users, chats, options, emit, ct);
+        if (sorted.Count == 0 && prevLastId > 0)
+            emit?.Log("Нет новых сообщений в истории — докачка медиа и файлов…");
 
-        emit?.SetPhase(ExportWorkPhase.Html);
-        emit?.Log("Формирование HTML…");
-        var textById = new Dictionary<int, string>();
-        foreach (var m in sorted) textById[m.ID] = PlainPreview(m);
+        // Для медиа нужны все сообщения, если текст уже выгружен ранее
+        var mediaMessages = sorted.Count > 0
+            ? sorted
+            : ApplyDateAndIncrementalFilter(allSorted, options, lastId: 0);
 
-        var msgDataList = new List<MsgData>(sorted.Count);
-        foreach (var m in sorted)
-            msgDataList.Add(BuildMsgData(m, users, chats, textById, yearMonthSubdir: true));
+        Dictionary<long, MemberData> members;
+        var htmlPath = Path.Combine(outputRoot, "index.html");
+        var skipText = ExportCompletionTracker.IsTextComplete(outputRoot, state) && sorted.Count == 0;
 
-        var authorMap = msgDataList.ToDictionary(d => d.Id, d => d.Author);
-        foreach (var md in msgDataList)
+        if (!skipText)
         {
-            if (md.ReplyTo is { } rid && authorMap.TryGetValue(rid, out var ra))
-                md.ReplyAuthor = ra;
+            emit?.SetPhase(ExportWorkPhase.Participants);
+            emit?.Log($"Сообщений для обработки: {Math.Max(sorted.Count, mediaMessages.Count)}. Загрузка участников…");
+            members = await LoadParticipantsAsync(client, peer, users, chats, options, emit, ct);
+
+            emit?.SetPhase(ExportWorkPhase.Html);
+            emit?.Log("Формирование HTML…");
+            var textById = new Dictionary<int, string>();
+            foreach (var m in sorted) textById[m.ID] = PlainPreview(m);
+
+            var msgDataList = new List<MsgData>(sorted.Count);
+            foreach (var m in sorted)
+                msgDataList.Add(BuildMsgData(m, users, chats, textById, yearMonthSubdir: true));
+
+            var authorMap = msgDataList.ToDictionary(d => d.Id, d => d.Author);
+            foreach (var md in msgDataList)
+            {
+                if (md.ReplyTo is { } rid && authorMap.TryGetValue(rid, out var ra))
+                    md.ReplyAuthor = ra;
+            }
+
+            await WriteHtmlAsync(htmlPath, chatTitle, allSorted.Count, msgDataList, members, options.MessagesPerPage, ct);
+            state.TextExportComplete = true;
+            emit?.MarkTextComplete();
+            if (options.Incremental && sorted.Count > 0)
+            {
+                state.LastMessageId = sorted.Max(m => m.ID);
+                state.LastExportDate = DateTime.UtcNow;
+                state.TotalMessages += sorted.Count;
+            }
+            IncrementalStateService.Save(outputRoot, state);
+        }
+        else
+        {
+            emit?.Log("Текст и HTML уже готовы — пропуск.");
+            emit?.MarkTextComplete();
+            members = await LoadParticipantsAsync(client, peer, users, chats, options, emit, ct);
         }
 
-        var htmlPath = Path.Combine(outputRoot, "index.html");
-        await WriteHtmlAsync(htmlPath, chatTitle, allSorted.Count, msgDataList, members, options.MessagesPerPage, ct);
-
         // ─ Скачивание медиа ──────────────────────────────────────
-        emit?.SetPhase(ExportWorkPhase.Media);
-        emit?.Log("Скачивание медиа…");
-        await DownloadAllMediaAsync(client, peer, sorted, outputRoot, options, state, emit, ct);
-
-        // ─ Длинные тексты ────────────────────────────────────────
-        if (options.SaveLongTexts)
+        if (mediaEnabled && !state.MediaExportComplete)
         {
-            var longTexts = sorted.OfType<Message>()
-                .Where(m => m.message?.Length >= options.LongTextThreshold)
-                .ToList();
+            emit?.SetPhase(ExportWorkPhase.Media);
+            emit?.Log("Скачивание медиа…");
+            await DownloadAllMediaAsync(client, peer, mediaMessages, outputRoot, options, state, emit, ct);
+            state.MediaExportComplete = true;
+            IncrementalStateService.Save(outputRoot, state);
+        }
+        else if (!mediaEnabled)
+        {
+            state.MediaExportComplete = true;
+            IncrementalStateService.Save(outputRoot, state);
+        }
+        else
+        {
+            emit?.Log("Медиа уже скачано — пропуск.");
+            emit?.SyncMedia(new MediaDownloadStats(), 1, 1, null);
+        }
+
+        // ─ Вспомогательные файлы ─────────────────────────────────
+        if (!state.AuxExportComplete)
+        {
+            var longTexts = options.SaveLongTexts
+                ? mediaMessages.OfType<Message>()
+                    .Where(m => m.message?.Length >= options.LongTextThreshold)
+                    .ToList()
+                : [];
+            var auxSteps = CountAuxSteps(options, members.Count > 0) + longTexts.Count;
+            emit?.BeginAuxPhase(auxSteps);
+
             if (longTexts.Count > 0)
             {
                 emit?.Log($"Сохранение {longTexts.Count} длинных текстов в /texts/…");
@@ -201,72 +303,85 @@ public static class ChatExportService
                 {
                     var author = ResolveAuthorName(m, users, chats);
                     await ExportOutputService.WriteLongTextAsync(outputRoot, m.id, m.message!, m.Date, author, ct);
+                    emit?.AuxStep();
                 }
             }
-        }
 
-        // ─ Вспомогательные файлы вывода ──────────────────────────
-        emit?.Log("Формирование вспомогательных файлов…");
+            emit?.Log("Формирование вспомогательных файлов…");
 
-        if (options.ExportJson)
-        {
-            var records = BuildMessageRecords(sorted, users, chats);
-            await ExportOutputService.WriteMessagesJsonAsync(outputRoot, records, ct);
-            emit?.Log("  → messages.json");
-        }
-
-        if (options.ExportSqlite)
-        {
-            var records = BuildMessageRecords(sorted, users, chats);
-            var memberRecords = members.Select(kv => new MemberRecord
+            if (options.ExportJson)
             {
-                Id = kv.Key,
-                Name = kv.Value.Name,
-                Username = kv.Value.Username,
-                Bio = kv.Value.Bio,
-                Phone = kv.Value.Phone,
-                IsBot = kv.Value.IsBot
-            });
-            await ExportOutputService.WriteSqliteAsync(outputRoot, records, memberRecords, ct);
-            emit?.Log("  → messages.db");
-        }
+                var records = BuildMessageRecords(mediaMessages, users, chats);
+                await ExportOutputService.WriteMessagesJsonAsync(outputRoot, records, ct);
+                emit?.Log("  → messages.json");
+                emit?.AuxStep();
+            }
 
-        if (members.Count > 0)
+            if (options.ExportSqlite)
+            {
+                var records = BuildMessageRecords(mediaMessages, users, chats);
+                var memberRecords = members.Select(kv => new MemberRecord
+                {
+                    Id = kv.Key,
+                    Name = kv.Value.Name,
+                    Username = kv.Value.Username,
+                    Bio = kv.Value.Bio,
+                    Phone = kv.Value.Phone,
+                    IsBot = kv.Value.IsBot
+                });
+                await ExportOutputService.WriteSqliteAsync(outputRoot, records, memberRecords, ct);
+                emit?.Log("  → messages.db");
+                emit?.AuxStep();
+            }
+
+            if (members.Count > 0)
+            {
+                var memTuples = members.Select(kv => (
+                    kv.Key, kv.Value.Name, kv.Value.Username, kv.Value.Bio, kv.Value.Phone, kv.Value.IsBot));
+                await ExportOutputService.WriteMembersCsvAsync(outputRoot, memTuples, ct);
+                emit?.Log("  → members.csv");
+                emit?.AuxStep();
+            }
+
+            await ExportOutputService.WriteMediaIndexCsvAsync(outputRoot, ct);
+            emit?.Log("  → media_index.csv");
+            emit?.AuxStep();
+
+            if (options.GenerateStatistics)
+            {
+                var statRecords = BuildMessageRecords(mediaMessages, users, chats).ToList();
+                await ExportOutputService.WriteStatisticsHtmlAsync(outputRoot, chatTitle, statRecords, ct);
+                emit?.Log("  → _statistics.html");
+                emit?.AuxStep();
+            }
+
+            await ExportOutputService.WriteManifestAsync(outputRoot, chatTitle, options.Mode, allSorted.Count, state, ct);
+            emit?.Log("  → manifest.json");
+            emit?.AuxStep();
+
+            if (options.CreateZip)
+            {
+                emit?.Log("Создание ZIP-архива…");
+                await ExportOutputService.CreateZipAsync(outputRoot, ct);
+                emit?.Log($"  → {Path.GetFileName(outputRoot)}.zip");
+                emit?.AuxStep();
+            }
+
+            state.AuxExportComplete = true;
+            emit?.MarkAuxComplete();
+            IncrementalStateService.Save(outputRoot, state);
+        }
+        else
         {
-            var memTuples = members.Select(kv => (
-                kv.Key, kv.Value.Name, kv.Value.Username, kv.Value.Bio, kv.Value.Phone, kv.Value.IsBot));
-            await ExportOutputService.WriteMembersCsvAsync(outputRoot, memTuples, ct);
-            emit?.Log("  → members.csv");
+            emit?.Log("Вспомогательные файлы уже готовы — пропуск.");
+            emit?.MarkAuxComplete();
         }
 
-        await ExportOutputService.WriteMediaIndexCsvAsync(outputRoot, ct);
-        emit?.Log("  → media_index.csv");
-
-        if (options.GenerateStatistics)
-        {
-            var statRecords = BuildMessageRecords(sorted, users, chats).ToList();
-            await ExportOutputService.WriteStatisticsHtmlAsync(outputRoot, chatTitle, statRecords, ct);
-            emit?.Log("  → _statistics.html");
-        }
-
-        // ─ Обновляем инкрементальное состояние ───────────────────
-        if (sorted.Count > 0)
+        if (sorted.Count > 0 && options.Incremental)
         {
             state.LastMessageId = sorted.Max(m => m.ID);
             state.LastExportDate = DateTime.UtcNow;
-            state.TotalMessages += sorted.Count;
             IncrementalStateService.Save(outputRoot, state);
-        }
-
-        await ExportOutputService.WriteManifestAsync(outputRoot, chatTitle, options.Mode, allSorted.Count, state, ct);
-        emit?.Log("  → manifest.json");
-
-        // ─ ZIP ───────────────────────────────────────────────────
-        if (options.CreateZip)
-        {
-            emit?.Log("Создание ZIP-архива…");
-            await ExportOutputService.CreateZipAsync(outputRoot, ct);
-            emit?.Log($"  → {Path.GetFileName(outputRoot)}.zip");
         }
 
         // ─ История экспортов ─────────────────────────────────────
@@ -287,6 +402,17 @@ public static class ChatExportService
         emit?.SetPhase(ExportWorkPhase.Done);
         emit?.CurrentFileHint = null;
         emit?.Log($"Готово за {duration.TotalSeconds:F0}с → {outputRoot}");
+    }
+
+    private static int CountAuxSteps(ExportOptions options, bool hasMembers)
+    {
+        var n = 2; // media_index.csv + manifest.json
+        if (options.ExportJson) n++;
+        if (options.ExportSqlite) n++;
+        if (hasMembers) n++;
+        if (options.GenerateStatistics) n++;
+        if (options.CreateZip) n++;
+        return n;
     }
 
     private static List<MessageBase> ApplyDateAndIncrementalFilter(
@@ -857,7 +983,7 @@ const M=
                 var fp = Path.Combine(mediaDir, fn);
                 if (File.Exists(fp) && new FileInfo(fp).Length > 0) { lock (st) st.Skipped++; return; }
 
-                emit?.SyncMedia(st, 0, 0, fn);
+                emit?.SetMediaFileHint(fn);
                 PhotoSizeBase? targetSize = opts.Quality switch
                 {
                     MediaQuality.Thumbs => PickSmallestSize(photo),
@@ -927,7 +1053,7 @@ const M=
                 if (isVoice && !opts.DownloadVoice) return;
                 if (!isVid && !isSticker && !isVoice && !opts.DownloadDocuments) return;
 
-                emit?.SyncMedia(st, 0, 0, BuildDocumentFileName(msg.id, doc));
+                emit?.SetMediaFileHint(BuildDocumentFileName(msg.id, doc));
                 await DownloadDocumentWithRetryAsync(client, peer, msg.id, doc, mediaDir, opts, emit, ct, st).ConfigureAwait(false);
 
                 // Дедупликация
@@ -1066,10 +1192,8 @@ const M=
             catch { /* перезапишем ниже */ }
         }
 
-        // Для видео — больше попыток, т.к. file_reference может устаревать
-        var maxAttempts = isVideo ? 8 : 4;
-        // Таймаут зависания: если нет прогресса N минут — отменяем и повторяем
-        var stallMinutes = isVideo ? 10.0 : 3.0;
+        var maxAttempts = TelegramDownloadHelper.GetDownloadMaxAttempts(doc, isVideo);
+        var stallMinutes = TelegramDownloadHelper.GetStallTimeoutMinutes(doc, isVideo);
 
         Exception? last = null;
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
@@ -1098,10 +1222,36 @@ const M=
             {
                 await Task.Delay(opts.DelayAfterEachMediaFile, stallCts.Token).ConfigureAwait(false);
 
-                await using var fs = File.Create(fp);
+                var resumeFrom = 0L;
+                if (File.Exists(fp))
+                {
+                    resumeFrom = new FileInfo(fp).Length;
+                    if (doc.size > 0 && resumeFrom >= doc.size)
+                    {
+                        st.Skipped++;
+                        return;
+                    }
+                    if (resumeFrom > doc.size && doc.size > 0)
+                    {
+                        try { File.Delete(fp); } catch { /* */ }
+                        resumeFrom = 0;
+                    }
+                }
+
+                if (resumeFrom > 0)
+                    emit?.Log($"  ↻ Докачка {fn}: с {FormatFileSize(resumeFrom)} / {FormatFileSize(doc.size)}…");
+
+                await using var fs = new FileStream(fp, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Read);
+                if (resumeFrom > 0)
+                    fs.Seek(resumeFrom, SeekOrigin.Begin);
+                else
+                    fs.SetLength(0);
+
                 await client.DownloadFileAsync(doc, fs, progress: (bytes, total) =>
                 {
-                    stallCts.Token.ThrowIfCancellationRequested();
+                    // Не бросать исключение из callback — иначе при «Стоп» оно не ловится снаружи
+                    if (ct.IsCancellationRequested)
+                        return;
                     lastActivity = DateTime.UtcNow; // Сбрасываем watchdog при каждом чанке
                     // Логируем прогресс видео каждые ~25%
                     if (isVideo && total > 0 && emit != null)
@@ -1168,22 +1318,20 @@ const M=
                 else st.Docs++;
                 return;
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                if (File.Exists(fp)) try { File.Delete(fp); } catch { /* */ }
+                throw;
+            }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 // Зависание обнаружено watchdog'ом — обновляем ссылку и повторяем
-                emit?.Log($"  {fn}: загрузка зависла ({stallMinutes} мин без данных), повтор {attempt}/{maxAttempts}…");
-                if (File.Exists(fp)) try { File.Delete(fp); } catch { /* */ }
-                if (peer != null)
-                {
-                    var refreshed = await TryGetMessageByIdAsync(client, peer, messageId, opts, ct)
-                        .ConfigureAwait(false);
-                    if (refreshed?.media is MessageMediaDocument mmd2 && mmd2.document is Document freshDoc)
-                    {
-                        doc = freshDoc;
-                        fn = BuildDocumentFileName(messageId, doc);
-                        fp = Path.Combine(mediaDir, fn);
-                    }
-                }
+                var stallPartial = File.Exists(fp) ? new FileInfo(fp).Length : 0L;
+                emit?.Log(stallPartial > 0
+                    ? $"  {fn}: нет данных {stallMinutes:0.#} мин — докачка с {FormatFileSize(stallPartial)} ({attempt}/{maxAttempts})…"
+                    : $"  {fn}: загрузка зависла ({stallMinutes:0.#} мин), повтор {attempt}/{maxAttempts}…");
+                (doc, fn, fp) = await RefreshDocumentReferenceAsync(client, peer, messageId, opts, ct, doc, fn, fp, mediaDir, emit)
+                    .ConfigureAwait(false);
                 last = new TimeoutException($"Загрузка зависла: {fn}");
                 await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
             }
@@ -1192,20 +1340,24 @@ const M=
                 ex.Message.Contains("FILE_REFERENCE_INVALID"))
             {
                 emit?.Log($"  {fn}: {ex.Message} — обновляю ссылку… (попытка {attempt}/{maxAttempts})");
-                if (File.Exists(fp)) try { File.Delete(fp); } catch { /* */ }
-                if (peer != null)
-                {
-                    var refreshed = await TryGetMessageByIdAsync(client, peer, messageId, opts, ct)
-                        .ConfigureAwait(false);
-                    if (refreshed?.media is MessageMediaDocument mmd2 && mmd2.document is Document freshDoc)
-                    {
-                        doc = freshDoc;
-                        fn = BuildDocumentFileName(messageId, doc);
-                        fp = Path.Combine(mediaDir, fn);
-                    }
-                }
+                if (File.Exists(fp)) try { File.Delete(fp); } catch { /* новая ссылка — с начала */ }
+                (doc, fn, fp) = await RefreshDocumentReferenceAsync(client, peer, messageId, opts, ct, doc, fn, fp, mediaDir, emit)
+                    .ConfigureAwait(false);
                 last = ex;
                 await Task.Delay(TimeSpan.FromMilliseconds(800 * attempt), ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (TelegramDownloadHelper.IsTransientDownloadError(ex))
+            {
+                last = ex;
+                var partial = File.Exists(fp) ? new FileInfo(fp).Length : 0L;
+                emit?.Log(partial > 0
+                    ? $"  {fn}: обрыв соединения — сохранено {FormatFileSize(partial)}, повтор {attempt}/{maxAttempts}…"
+                    : $"  {fn}: обрыв соединения — повтор {attempt}/{maxAttempts}…");
+                (doc, fn, fp) = await RefreshDocumentReferenceAsync(client, peer, messageId, opts, ct, doc, fn, fp, mediaDir, emit)
+                    .ConfigureAwait(false);
+                await Task.Delay(
+                    TimeSpan.FromSeconds(TelegramDownloadHelper.RetryDelaySeconds(attempt, partial)), ct)
+                    .ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -1221,8 +1373,34 @@ const M=
             }
         }
 
+        ct.ThrowIfCancellationRequested();
         if (last != null)
-            throw last;
+        {
+            var partial = File.Exists(fp) ? new FileInfo(fp).Length : 0L;
+            emit?.Log(partial > 0
+                ? $"  ✗ {fn}: не скачан ({last.Message}). Частично: {FormatFileSize(partial)} — повторите экспорт для докачки."
+                : $"  ✗ {fn}: не скачан ({last.Message})");
+            st.Skipped++;
+        }
+    }
+
+    private static async Task<(Document Doc, string Fn, string Fp)> RefreshDocumentReferenceAsync(
+        Client client, InputPeer? peer, int messageId, ExportOptions opts, CancellationToken ct,
+        Document doc, string fn, string fp, string mediaDir, ExportProgressEmitter? emit)
+    {
+        if (peer is null) return (doc, fn, fp);
+        var refreshed = await TryGetMessageByIdAsync(client, peer, messageId, opts, ct).ConfigureAwait(false);
+        if (refreshed?.media is not MessageMediaDocument mmd2 || mmd2.document is not Document freshDoc)
+            return (doc, fn, fp);
+        doc = freshDoc;
+        var newFn = BuildDocumentFileName(messageId, doc);
+        if (!string.Equals(newFn, fn, StringComparison.OrdinalIgnoreCase))
+        {
+            fn = newFn;
+            fp = Path.Combine(mediaDir, fn);
+        }
+        emit?.Log($"  #{messageId}: обновлена ссылка на файл");
+        return (doc, fn, fp);
     }
 
     private static string FormatFileSize(long bytes) => bytes switch
@@ -1454,6 +1632,10 @@ function filterP(){const q=document.getElementById('search-p').value.toLowerCase
 
     internal sealed class ExportProgressEmitter
     {
+        private const double WeightText = 0.40;
+        private const double WeightMedia = 0.45;
+        private const double WeightAux = 0.15;
+
         private readonly IProgress<ExportProgressReport> _target;
 
         public ExportProgressEmitter(IProgress<ExportProgressReport> target) => _target = target;
@@ -1477,9 +1659,80 @@ function filterP(){const q=document.getElementById('search-p').value.toLowerCase
         public int BioTotal { get; private set; }
         public bool BioPhase { get; private set; }
 
+        private double _textSegment;
+        private double _mediaSegment;
+        private double _auxSegment;
+        private bool _mediaEnabled = true;
+        private bool _auxEnabled = true;
+        private int _auxStep;
+        private int _auxTotal;
+
+        public void ConfigureSegments(bool mediaEnabled, bool auxEnabled)
+        {
+            _mediaEnabled = mediaEnabled;
+            _auxEnabled = auxEnabled;
+            if (!_mediaEnabled) _mediaSegment = 1;
+            if (!_auxEnabled) _auxSegment = 1;
+        }
+
         public void SetPhase(ExportWorkPhase phase)
         {
             Phase = phase;
+            switch (phase)
+            {
+                case ExportWorkPhase.History:
+                    _textSegment = Math.Max(_textSegment, 0.04);
+                    break;
+                case ExportWorkPhase.Participants:
+                    _textSegment = Math.Max(_textSegment, 0.55);
+                    break;
+                case ExportWorkPhase.Html:
+                    _textSegment = Math.Max(_textSegment, 0.88);
+                    break;
+                case ExportWorkPhase.Media:
+                    _textSegment = 1;
+                    break;
+                case ExportWorkPhase.Done:
+                    _textSegment = 1;
+                    _mediaSegment = 1;
+                    _auxSegment = 1;
+                    break;
+            }
+            Emit();
+        }
+
+        public void MarkTextComplete()
+        {
+            _textSegment = 1;
+            Emit();
+        }
+
+        public void BeginAuxPhase(int totalSteps)
+        {
+            _textSegment = 1;
+            _mediaSegment = _mediaEnabled ? Math.Max(_mediaSegment, 1) : 1;
+            _auxTotal = Math.Max(totalSteps, 1);
+            _auxStep = 0;
+            _auxSegment = 0;
+            Emit();
+        }
+
+        public void AuxStep()
+        {
+            _auxStep++;
+            _auxSegment = Math.Min(1, _auxStep / (double)_auxTotal);
+            Emit();
+        }
+
+        public void MarkAuxComplete()
+        {
+            _auxSegment = 1;
+            Emit();
+        }
+
+        public void SetMediaFileHint(string? hint)
+        {
+            CurrentFileHint = hint;
             Emit();
         }
 
@@ -1510,6 +1763,7 @@ function filterP(){const q=document.getElementById('search-p').value.toLowerCase
         public void SyncMedia(MediaDownloadStats st, int processed, int total, string? hint)
         {
             Phase = ExportWorkPhase.Media;
+            _textSegment = 1;
             Photos = st.Photos;
             Videos = st.Videos;
             Gifs = st.Gifs;
@@ -1518,8 +1772,19 @@ function filterP(){const q=document.getElementById('search-p').value.toLowerCase
             Docs = st.Docs;
             Skipped = st.Skipped;
             BytesDownloaded = st.TotalBytes;
-            MediaProcessed = processed;
-            MediaTotal = total;
+            if (total > 0)
+            {
+                MediaTotal = total;
+                MediaProcessed = processed;
+                _mediaSegment = Math.Min(1, processed / (double)total);
+            }
+            else if (processed > 0 && MediaTotal > 0)
+            {
+                MediaProcessed = processed;
+                _mediaSegment = Math.Min(1, processed / (double)MediaTotal);
+            }
+            else if (Phase == ExportWorkPhase.Media)
+                _mediaSegment = 1;
             CurrentFileHint = hint;
             Emit();
         }
@@ -1553,34 +1818,39 @@ function filterP(){const q=document.getElementById('search-p').value.toLowerCase
                 BytesDownloaded,
                 CurrentFileHint,
                 pStep, pTot,
-                indet, frac));
+                indet, frac,
+                _textSegment, _mediaSegment, _auxSegment));
         }
 
         private (bool Indeterminate, double Fraction) ComputeProgress()
         {
-            switch (Phase)
+            if (Phase == ExportWorkPhase.History)
             {
-                case ExportWorkPhase.History:
-                    if (MessagesLoadedCount <= 0)
-                        return (true, 0);
-                    return (false, Math.Min(0.20, 0.02 + MessagesLoadedCount / 150000.0 * 0.18));
-                case ExportWorkPhase.Participants:
-                    if (BioPhase && BioTotal > 0)
-                        return (false, 0.20 + 0.14 * Math.Min(1, BioStep / (double)BioTotal));
-                    if (!BioPhase && ParticipantFetchTotal > 0)
-                        return (false, 0.18 + 0.06 * Math.Min(1, ParticipantFetchOffset / (double)ParticipantFetchTotal));
-                    return (true, 0.22);
-                case ExportWorkPhase.Html:
-                    return (true, 0.35);
-                case ExportWorkPhase.Media:
-                    if (MediaTotal <= 0)
-                        return (false, 1);
-                    return (false, 0.34 + 0.65 * (MediaProcessed / (double)MediaTotal));
-                case ExportWorkPhase.Done:
-                    return (false, 1);
-                default:
-                    return (true, 0);
+                if (MessagesLoadedCount <= 0)
+                    return (true, OverallFraction());
+                _textSegment = Math.Max(_textSegment, Math.Min(0.5, 0.08 + MessagesLoadedCount / 120_000.0 * 0.42));
             }
+            else if (Phase == ExportWorkPhase.Participants)
+            {
+                if (BioPhase && BioTotal > 0)
+                    _textSegment = Math.Max(_textSegment, 0.55 + 0.28 * Math.Min(1, BioStep / (double)BioTotal));
+                else if (!BioPhase && ParticipantFetchTotal > 0)
+                    _textSegment = Math.Max(_textSegment, 0.52 + 0.30 * Math.Min(1, ParticipantFetchOffset / (double)ParticipantFetchTotal));
+            }
+
+            return (false, OverallFraction());
+        }
+
+        private double OverallFraction()
+        {
+            var wMedia = _mediaEnabled ? WeightMedia : 0;
+            var wAux = _auxEnabled ? WeightAux : 0;
+            var wText = WeightText;
+            var sum = wText + wMedia + wAux;
+            if (sum <= 0) return 0;
+            var mediaP = _mediaEnabled ? _mediaSegment : 1;
+            var auxP = _auxEnabled ? _auxSegment : 1;
+            return (wText * _textSegment + wMedia * mediaP + wAux * auxP) / sum;
         }
     }
 }
